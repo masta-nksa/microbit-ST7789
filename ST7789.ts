@@ -175,58 +175,106 @@ enum Color {
      //% width.min=100 width.defl=240
      //% height.min=100 height.defl=240
      //% weight=100
-     export function init(width: number = 240, height: number = 240): void {
-        TFTHEIGHT = height
-        TFTWIDTH = width
-         // set SPI frequency
-         pins.spiFrequency(3000000)
 
-         // Software reset
-         send(TFTCommands.SWRESET, [1], 150)
-         // Exit Sleep mode
-         send(TFTCommands.SLPOUT, [1], 25)
-         // Frame rate control - normal mode
-         send(TFTCommands.FRMCTR1, [0x01, 0x2C, 0x2D], 25)
-         // Frame rate control - idle mode
-         send(TFTCommands.FRMCTR2, [0x01, 0x2C, 0x2D, 0x01, 0x2C, 0x2D], 25)
-         // Display inversion control
-         // send(TFTCommands.INVCTR, [0x07])
-         // Display power control
-         send(TFTCommands.PWCTR1, [0xA2, 0x02, 0x84], 10)
-         send(TFTCommands.PWCTR2, [0x8A, 0x2A], 10)
-         send(TFTCommands.PWCTR3, [0x0A, 0x00], 10)
-         send(TFTCommands.PWCTR4, [0x8A, 0x2A], 10)
-         send(TFTCommands.PWCTR5, [0x8A, 0xEE], 10)
-         send(TFTCommands.VMCTR1, [0x0E], 25)
+   
+// === SPI + Pin-Setup: an deine Verdrahtung anpassen ===
+// MOSI = P15, SCK = P13, (MISO ungenutzt)
+const __PIN_MOSI = DigitalPin.P15;
+const __PIN_MISO = DigitalPin.P14;  // ungenutzt, aber für spiPins erforderlich
+const __PIN_SCK  = DigitalPin.P13;
 
-         // Disable inversion
-         // send(TFTCommands.INVOFF, [])
+// DC/CS wie verkabelt:
+const __PIN_DC   = DigitalPin.P1;
+const __PIN_CS   = DigitalPin.P16;
 
-         // Set 16-bit color mode
-         send(TFTCommands.COLMOD, [0x55], 25)
+let __spiReady = false;
 
-         // Memory access control
-         send(TFTCommands.MADCTL, [0x08], 10)
+function __ensureSPI() {
+    if (__spiReady) return;
+    pins.spiPins(__PIN_MOSI, __PIN_MISO, __PIN_SCK); // MOSI, MISO, SCK
+    pins.spiFrequency(8000000);                      // 8 MHz; bei Bedarf 4 MHz probieren
+    pins.digitalWritePin(__PIN_CS, 1);               // CS idle high
+    pins.digitalWritePin(__PIN_DC, 1);               // DC default data
+    __spiReady = true;
+}
 
-         // set the display size        
-         // Column address set
-         send(TFTCommands.CASET, [0x00, 0x00, 0x00, TFTWIDTH], 10)
-         // Row address set
-         send(TFTCommands.RASET, [0x00, 0x00, 0x00, TFTHEIGHT], 10)
+// --- Hilfsfunktionen analog zu deinen Platzhaltern ---
+function pause(ms: number) { basic.pause(ms); }
 
-         // Set Gamma
-         send(TFTCommands.GMCTRP1, [0x02, 0x1C, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2D, 0x29, 0x25, 0x2B, 0x39, 0x00, 0x01, 0x03, 0x10], 10)
-         send(TFTCommands.GMCTRN1, [0x03, 0x1D, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D, 0x2E, 0x2E, 0x37, 0x3F, 0x00, 0x00, 0x02, 0x10], 10)
+function cmd(c: number) {          // send command byte
+    __ensureSPI();
+    pins.digitalWritePin(__PIN_DC, 0);  // Command
+    pins.digitalWritePin(__PIN_CS, 0);  // CS low
+    pins.spiWrite(c & 0xFF);
+    pins.digitalWritePin(__PIN_CS, 1);  // CS high
+}
 
-         send(TFTCommands.INVON, []) // hack - docs are wrong
-         // Set normal mode - partial mode off
-         send(TFTCommands.NORON, [])
+function dat(b: number) {          // send one data byte
+    __ensureSPI();
+    pins.digitalWritePin(__PIN_DC, 1);  // Data
+    pins.digitalWritePin(__PIN_CS, 0);
+    pins.spiWrite(b & 0xFF);
+    pins.digitalWritePin(__PIN_CS, 1);
+}
 
-         // Turn display on
-         send(TFTCommands.DISPON, [], 25)
+function dats(a: number[]) {       // send array of data bytes
+    __ensureSPI();
+    pins.digitalWritePin(__PIN_DC, 1);
+    pins.digitalWritePin(__PIN_CS, 0);
+    for (let v of a) pins.spiWrite(v & 0xFF);
+    pins.digitalWritePin(__PIN_CS, 1);
+}
 
-         rotate(3)
-     }
+// ---------- PATCH: ST7789V Init für 240 x 320 (Portrait) ----------
+// Hilfsfunktionen ggf. an Lib-Namen anpassen:
+function cmd(c: number) { /* send command byte */ }
+function dat(b: number) { /* send one data byte */ }
+function dats(a: number[]) { for (let v of a) dat(v); }
+function pause(ms: number) { control.waitMicros(ms * 1000); } // oder basic.pause(ms)
+
+// Diese Funktion in der Datei anstelle der bisherigen Init-Logik nutzen.
+// Wenn deine Lib eine init(width,height) hat, ruf diese Funktion darin auf
+// oder ersetze deren Inhalt 1:1 durch diesen Block.
+export function init240x320Portrait(): void {
+    // Software Reset
+    cmd(0x01);                  // SWRESET
+    pause(150);
+
+    // Sleep Out
+    cmd(0x11);                  // SLPOUT
+    pause(120);
+
+    // Pixel-Format: 16-bit (RGB565)
+    cmd(0x3A);                  // COLMOD
+    dat(0x55);
+
+    // Memory Access Control (Rotation/Farbreihenfolge)
+    // Erst RGB probieren (0x00). Wenn Farben "falsch" wirken -> 0x08 (BGR)
+    cmd(0x36);                  // MADCTL
+    dat(0x00);                  // Portrait, RGB
+    // dat(0x08);               // Portrait, BGR (Alternative, falls Farben invertiert)
+
+    // Volles Adressfenster setzen (CASET/RASET) für 240 x 320
+    // X (Spalten): 0..239 => 0x0000 .. 0x00EF
+    cmd(0x2A);                  // CASET
+    dats([0x00, 0x00, 0x00, 0xEF]);
+
+    // Y (Zeilen): 0..319 => 0x0000 .. 0x013F
+    cmd(0x2B);                  // RASET
+    dats([0x00, 0x00, 0x01, 0x3F]);
+
+    // (Optional) Invertierung nach Bedarf:
+    // cmd(0x20);               // INVOFF
+    // cmd(0x21);               // INVON
+
+    // Display ON
+    cmd(0x29);                  // DISPON
+    pause(20);
+
+    // Startschwarzen „Clear“ vermeiden – wir zeichnen gleich sichtbar Farbe.
+}
+// ---------- ENDE PATCH ----------
+
 
      /*
       * Draw single pixel
@@ -504,3 +552,4 @@ enum Color {
         return ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF);
     }
  }
+
